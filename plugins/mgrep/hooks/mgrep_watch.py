@@ -2,10 +2,11 @@ import os
 import sys
 import json
 import subprocess
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
-DEBUG_LOG_FILE = Path(os.environ.get("MGREP_WATCH_LOG", "/tmp/mgrep-watch.log"))
+DEBUG_LOG_FILE = Path(os.environ.get("MGREP_WATCH_LOG", os.path.join(tempfile.gettempdir(), "mgrep-watch.log")))
 
 
 def debug_log(message: str):
@@ -24,22 +25,42 @@ def read_hook_input():
         return None
     try:
         return json.loads(raw)
-    except json.JSONDecodeError as exc:
-        debug_log(f"Failed to decode JSON: {exc}")
-        return None
+    except json.JSONDecodeError:
+        # Windows paths have unescaped backslashes — fix them and retry
+        try:
+            import re
+            fixed = re.sub(r'(?<!\\)\\(?!["\\/bfnrtu])', r'\\\\', raw)
+            return json.loads(fixed)
+        except json.JSONDecodeError as exc:
+            debug_log(f"Failed to decode JSON: {exc}")
+            return None
 
 
 
 if __name__ == "__main__":
-    payload = read_hook_input()
+    payload = read_hook_input() or {}
     cwd = payload.get("cwd")
+    session_id = payload.get("session_id")
 
-    pid_file = f"/tmp/mgrep-watch-pid-{payload.get('session_id')}.txt"
+    if not session_id:
+        debug_log("No session_id in payload, skipping")
+        print(json.dumps({}))
+        sys.exit(0)
+
+    pid_file = os.path.join(tempfile.gettempdir(), f"mgrep-watch-pid-{session_id}.txt")
     if os.path.exists(pid_file):
         debug_log(f"PID file already exists: {pid_file}")
         sys.exit(1)
 
-    process = subprocess.Popen(["mgrep", "watch"], preexec_fn=os.setsid, stdout=open(f"/tmp/mgrep-watch-command-{payload.get('session_id')}.log", "w"), stderr=open(f"/tmp/mgrep-watch-command-{payload.get('session_id')}.log", "w"))
+    log_path = os.path.join(tempfile.gettempdir(), f"mgrep-watch-command-{session_id}.log")
+    log_handle = open(log_path, "w")
+    popen_kwargs = {"stdout": log_handle, "stderr": log_handle}
+    if sys.platform == "win32":
+        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kwargs["preexec_fn"] = os.setsid
+    mgrep_cmd = "mgrep.cmd" if sys.platform == "win32" else "mgrep"
+    process = subprocess.Popen([mgrep_cmd, "watch"], **popen_kwargs)
     debug_log(f"Started mgrep watch process: {process.pid}")
     debug_log(f"All environment variables: {os.environ}")
     with open(pid_file, "w") as handle:
