@@ -49,8 +49,17 @@ if __name__ == "__main__":
 
     pid_file = os.path.join(tempfile.gettempdir(), f"mgrep-watch-pid-{session_id}.txt")
     if os.path.exists(pid_file):
-        debug_log(f"PID file already exists: {pid_file}")
-        sys.exit(1)
+        # Check if the process is still running
+        try:
+            old_pid = int(open(pid_file).read().strip())
+            os.kill(old_pid, 0)  # signal 0 = check existence
+            debug_log(f"mgrep watch already running (pid {old_pid}), skipping")
+            print(json.dumps({}))
+            sys.exit(0)
+        except (OSError, ValueError):
+            # Process is dead, clean up stale PID file
+            debug_log(f"Stale PID file found, removing: {pid_file}")
+            os.remove(pid_file)
 
     log_path = os.path.join(tempfile.gettempdir(), f"mgrep-watch-command-{session_id}.log")
     log_handle = open(log_path, "w")
